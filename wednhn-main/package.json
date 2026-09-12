@@ -1,0 +1,31 @@
+{
+  "name": "wednhn-main",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "cf:dev": "wrangler pages dev dist --compatibility-date=2026-09-12 --d1 DB=wed-nhn --r2 MEDIA=wed-nhn",
+    "cf:deploy": "npm run build && wrangler pages deploy dist",
+    "db:migrate:local": "wrangler d1 migrations apply wed-nhn --local",
+    "db:migrate:remote": "wrangler d1 migrations apply wed-nhn --remote"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "lucide-react": "^0.546.0",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "vite": "^6.2.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "typescript": "~5.8.2",
+    "wrangler": "^4.36.0"
+  }
+}
