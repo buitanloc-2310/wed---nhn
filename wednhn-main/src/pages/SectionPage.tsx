@@ -1,0 +1,28 @@
+import React,{useEffect,useState} from 'react';
+import {api} from '../lib/api';
+import {builtinFor} from '../data/longContent';
+const fallback:Record<string,{title:string;intro:string;items:string[]}>= {
+ '/ve-chung-toi':{title:'Về Nhà Hán Ngữ',intro:'Tìm hiểu định hướng, câu chuyện, sứ mệnh và cách Nhà Hán Ngữ xây dựng một cộng đồng học tập Hán ngữ cởi mở, thực tế và có giá trị lâu dài.',items:['Nhà Hán Ngữ là gì?','Câu chuyện hình thành','Vì sao NHN được xây dựng?','Sứ mệnh','Tầm nhìn','Giá trị cốt lõi','Định hướng phát triển','NHN hướng đến ai?','Vai trò trong hệ sinh thái Sky First','Cam kết với cộng đồng']},
+ '/hoc-han-ngu':{title:'Học Hán Ngữ',intro:'Học theo cấp độ, kỹ năng và mục tiêu.',items:['HSK','HSKK','CSCA','Tiếng Trung giao tiếp','Từ vựng','Ngữ pháp','Phát âm','Chữ Hán']},
+ '/kho-hoc-lieu':{title:'Kho học liệu',intro:'Tài liệu được sắp xếp theo cấp độ, chủ đề và mục đích sử dụng.',items:['Tài liệu HSK 1–6','Tài liệu HSKK','Tài liệu CSCA','Đề thi','Bài tập','Flashcard','Tài liệu tham khảo']},
+ '/kien-thuc':{title:'Kiến thức',intro:'Khám phá chữ viết, thành ngữ, văn hóa, lịch sử và góc học tập.',items:['Hán ngữ','Chữ Hán','Văn hóa Trung Hoa','Lịch sử','Thành ngữ','Góc học tập']},
+ '/tin-tuc-su-kien':{title:'Tin tức & Sự kiện',intro:'Cập nhật hoạt động, workshop, cuộc thi và chương trình cộng đồng.',items:['Tin tức Nhà Hán Ngữ','Hoạt động','Workshop','Cuộc thi','Chương trình cộng đồng']},
+ '/cong-dong':{title:'Cộng đồng',intro:'Không gian kết nối người học, CTV, TNV và người đóng góp.',items:['Tham gia Nhà Hán Ngữ','Cộng tác viên','Tình nguyện viên','Cộng đồng học tiếng Trung','Đăng câu hỏi / chia sẻ']},
+ '/doi-tac':{title:'Đối tác',intro:'Kết nối giáo dục, học thuật, truyền thông và cộng đồng.',items:['Đơn vị đồng hành','Đối tác giáo dục','Đối tác truyền thông','Các dự án phối hợp']},
+ '/lien-he':{title:'Liên hệ',intro:'Gửi câu hỏi, đề xuất hợp tác hoặc trao đổi về chương trình.',items:['Thông tin liên hệ','Email','Mạng xã hội','Gửi câu hỏi','Đăng ký hợp tác']}
+};
+const moduleFor=(path:string)=>path==='/hoc-han-ngu'?'learning':path==='/kho-hoc-lieu'?'resources':path==='/kien-thuc'?'knowledge':path==='/tin-tuc-su-kien'?'posts':path==='/cong-dong'?'community':path==='/doi-tac'?'partners':path==='/lien-he'?'contact':'pages';
+export function SectionPage({path}:{path:string}){
+ const d=fallback[path]||fallback['/ve-chung-toi'];
+ const module=moduleFor(path);
+ const [items,setItems]=useState<any[]>(builtinFor(module).map(x=>({id:`builtin-${x.slug}`,slug:x.slug,title:x.title,position:x.position,data:{excerpt:x.excerpt,body_html:x.body_html,word_count:x.word_count}})));
+ useEffect(()=>{
+   const local=builtinFor(module).map(x=>({id:`builtin-${x.slug}`,slug:x.slug,title:x.title,position:x.position,data:{excerpt:x.excerpt,body_html:x.body_html,word_count:x.word_count}}));
+   setItems(local);
+   api(`/public/cms/${module}`).then(r=>{if(r.ok&&Array.isArray(r.data)&&r.data.length)setItems(r.data)}).catch(()=>{});
+ },[path,module]);
+ return <>
+  <section className="page-hero"><div className="container"><span className="kicker">NHÀ HÁN NGỮ</span><h1>{d.title}</h1><p>{d.intro}</p></div></section>
+  <section className="section"><div className="container content-index">{items.map((x:any,i:number)=><article id={x.slug} className="content-row" key={x.id||x.slug}><div className="index-no">{String(i+1).padStart(2,'0')}</div><div><h2>{x.title}</h2>{x.data?.excerpt&&<p className="lead">{x.data.excerpt}</p>}<div className="prose" dangerouslySetInnerHTML={{__html:x.data?.body_html||''}}/></div></article>)}</div></section>
+ </>;
+}
