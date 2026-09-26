@@ -1,5 +1,5 @@
 import {ensureRuntimeSchema} from '../_schema';
-interface Env { DB: D1Database; MEDIA: R2Bucket; SITE_NAME?: string; SITE_URL?: string; CTT_URL?: string }
+interface Env { DB: D1Database; MEDIA: R2Bucket; SITE_NAME?: string; SITE_URL?: string; APP_URL?: string }
 interface Ctx { request: Request; env: Env; params: { path?: string[] }; waitUntil(p:Promise<any>):void }
 const enc=new TextEncoder();
 const json=(data:any,status=200,headers:HeadersInit={})=>new Response(JSON.stringify(data),{status,headers:{'content-type':'application/json; charset=utf-8',...headers}});

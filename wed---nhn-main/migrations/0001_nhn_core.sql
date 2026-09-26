@@ -30,4 +30,4 @@ CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status,published_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cms_module ON cms_items(module,status,position);
 INSERT OR IGNORE INTO site_settings(key,value) VALUES
-('site_name','Nhà Hán Ngữ'),('tagline','Kết nối tri thức • Mở lối tương lai'),('primary_color','#9d1820'),('accent_color','#c59a3d'),('logo_key','/brand/nhn-logo-transparent.png'),('ctt_url','https://ctt.nhahanngu.io.vn'),('content_min_words','800'),('maintenance_mode','false');
+('site_name','Nhà Hán Ngữ'),('tagline','Kết nối tri thức • Mở lối tương lai'),('primary_color','#9d1820'),('accent_color','#c59a3d'),('logo_key','/brand/nhn-logo-transparent.png'),('app_url','https://app.nhahanngu.io.vn'),('content_min_words','200'),('maintenance_mode','false');

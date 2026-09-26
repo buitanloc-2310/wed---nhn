@@ -49,13 +49,13 @@ const ddl = [
 const seed = [
 `INSERT OR IGNORE INTO site_settings(key,value) VALUES
  ('site_name','Nhà Hán Ngữ'),('tagline','Kết nối tri thức • Mở lối tương lai'),('primary_color','#9d1820'),('accent_color','#c59a3d'),
- ('logo_key','/brand/nhn-logo-transparent.png'),('ctt_url','https://ctt.nhahanngu.io.vn'),('content_min_words','800'),('maintenance_mode','false'),
+ ('logo_key','/brand/nhn-logo-transparent.png'),('app_url','https://app.nhahanngu.io.vn'),('content_min_words','200'),('maintenance_mode','false'),
  ('footer_description','Không gian học tập, chia sẻ và kết nối dành cho cộng đồng quan tâm đến Hán ngữ và tiếng Trung.'),
  ('contact_email','nhahanngu.vn@gmail.com'),('support_email','nhahanngu.info@gmail.com'),('facebook_url',''),('tiktok_url',''),('instagram_url',''),
- ('seo_default_title','Nhà Hán Ngữ'),('seo_default_description','Học Hán ngữ, HSK, HSKK, CSCA, học liệu, thi thử và cộng đồng.'),
+ ('seo_default_title','Nhà Hán Ngữ'),('seo_default_description','Học Hán ngữ, HSK, HSKK, CSCA, học liệu, làm bài tập và cộng đồng.'),
  ('homepage_hero_title','Học Hán ngữ theo một hành trình rõ ràng, thực tế và có cộng đồng.'),
- ('homepage_hero_description','Nhà Hán Ngữ xây dựng không gian học tập, học liệu, thi thử và hoạt động cộng đồng dành cho người học tiếng Trung ở nhiều cấp độ.'),
- ('navigation_json','[{"label":"Trang chủ","path":"/"},{"label":"Về chúng tôi","path":"/ve-chung-toi"},{"label":"Học Hán Ngữ","path":"/hoc-han-ngu"},{"label":"Kho học liệu","path":"/kho-hoc-lieu"},{"label":"Thi thử","path":"/thi-thu"},{"label":"Kiến thức","path":"/kien-thuc"},{"label":"Tin tức & Sự kiện","path":"/tin-tuc-su-kien"},{"label":"Cộng đồng","path":"/cong-dong"},{"label":"Đối tác","path":"/doi-tac"},{"label":"Liên hệ","path":"/lien-he"}]'),
+ ('homepage_hero_description','Nhà Hán Ngữ xây dựng không gian học tập, học liệu, làm bài tập và hoạt động cộng đồng dành cho người học tiếng Trung ở nhiều cấp độ.'),
+ ('navigation_json','[{"label":"Trang chủ","path":"/"},{"label":"Về chúng tôi","path":"/ve-chung-toi"},{"label":"Học Hán Ngữ","path":"/hoc-han-ngu"},{"label":"Kho học liệu","path":"/kho-hoc-lieu"},{"label":"Làm bài tập","path":"/thi-thu"},{"label":"Kiến thức","path":"/kien-thuc"},{"label":"Tin tức & Sự kiện","path":"/tin-tuc-su-kien"},{"label":"Cộng đồng","path":"/cong-dong"},{"label":"Đối tác","path":"/doi-tac"},{"label":"Liên hệ","path":"/lien-he"}]'),
  ('homepage_sections_json','["learning","exams","activities","community"]')`,
 `INSERT OR IGNORE INTO permissions(id,code,description) VALUES
  ('p-dashboard','dashboard.view','Xem tổng quan'),('p-site-view','site.view','Xem cấu hình website'),('p-site-manage','site.manage','Quản lý giao diện/cài đặt website'),

@@ -19,7 +19,7 @@ export const adminGroups=[
     ['contact','Liên hệ',MessageSquare],
   ]},
   {label:'Dữ liệu & học tập',items:[
-    ['exams','Thi thử & ngân hàng đề',ClipboardCheck],
+    ['exams','Làm bài tập & ngân hàng đề',ClipboardCheck],
     ['documents','Tài liệu công khai',FolderOpen],
     ['verification','Mã & xác nhận',BadgeCheck],
     ['media','Media Library',Image],

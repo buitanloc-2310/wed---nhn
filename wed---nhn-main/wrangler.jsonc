@@ -19,6 +19,6 @@
   "vars": {
     "SITE_NAME": "Nhà Hán Ngữ",
     "SITE_URL": "https://nhahanngu.io.vn",
-    "CTT_URL": "https://ctt.nhahanngu.io.vn"
+    "APP_URL": "https://app.nhahanngu.io.vn"
   }
 }

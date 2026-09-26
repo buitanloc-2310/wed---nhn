@@ -15,7 +15,7 @@ const sectionPaths=new Set(['/ve-chung-toi','/hoc-han-ngu','/kien-thuc','/cong-d
 export default function App(){
  const [path,setPath]=useState(currentPath());
  useEffect(()=>{
-  const titles:Record<string,string>={"/":"Nhà Hán Ngữ","/thi-thu":"Thi thử | Nhà Hán Ngữ","/kho-hoc-lieu":"Kho học liệu | Nhà Hán Ngữ","/tai-lieu":"Tài liệu | Nhà Hán Ngữ","/tra-cuu":"Tra cứu | Nhà Hán Ngữ","/tin-tuc-su-kien":"Bảng tin | Nhà Hán Ngữ","/tham-gia":"Tham gia | Nhà Hán Ngữ","/ve-chung-toi":"Về chúng tôi | Nhà Hán Ngữ","/hoc-han-ngu":"Học Hán Ngữ | Nhà Hán Ngữ","/kien-thuc":"Kiến thức | Nhà Hán Ngữ","/cong-dong":"Cộng đồng | Nhà Hán Ngữ","/doi-tac":"Đối tác | Nhà Hán Ngữ","/lien-he":"Liên hệ | Nhà Hán Ngữ"};
+  const titles:Record<string,string>={"/":"Nhà Hán Ngữ","/thi-thu":"Làm bài tập | Nhà Hán Ngữ","/kho-hoc-lieu":"Kho học liệu | Nhà Hán Ngữ","/tai-lieu":"Tài liệu | Nhà Hán Ngữ","/tra-cuu":"Tra cứu | Nhà Hán Ngữ","/tin-tuc-su-kien":"Bảng tin | Nhà Hán Ngữ","/tham-gia":"Tham gia | Nhà Hán Ngữ","/ve-chung-toi":"Về chúng tôi | Nhà Hán Ngữ","/hoc-han-ngu":"Học Hán Ngữ | Nhà Hán Ngữ","/kien-thuc":"Kiến thức | Nhà Hán Ngữ","/cong-dong":"Cộng đồng | Nhà Hán Ngữ","/doi-tac":"Đối tác | Nhà Hán Ngữ","/lien-he":"Liên hệ | Nhà Hán Ngữ"};
   document.title=titles[path]||"Nhà Hán Ngữ";
  },[path]);
  useEffect(()=>{

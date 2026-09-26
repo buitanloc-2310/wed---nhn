@@ -1,14 +1,14 @@
 # NHÀ HÁN NGỮ — V0 tổng hợp
 
 ## Định vị
-Website chính: `nhahanngu.io.vn`. Cổng thông tin hiện hữu: `ctt.nhahanngu.io.vn`.
+Website chính: `nhahanngu.io.vn`. Ứng dụng Nhà Hán Ngữ: `app.nhahanngu.io.vn`.
 Nhận diện bám logo Nhà Hán Ngữ và một phần DNA giao diện CTT: đỏ, vàng, nền sáng, học thuật hiện đại.
 
 ## Public
-Trang chủ; Về chúng tôi; Học Hán Ngữ; Kho học liệu; Thi thử; Kiến thức; Tin tức & Sự kiện; Cộng đồng; Đối tác; Liên hệ.
-Nội dung chuyên sâu do CMS quản lý; mỗi mục xuất bản tối thiểu 800 từ theo quy chuẩn dự án.
+Trang chủ; Về chúng tôi; Học Hán Ngữ; Kho học liệu; Làm bài tập; Kiến thức; Tin tức & Sự kiện; Cộng đồng; Đối tác; Liên hệ.
+Nội dung chính do CMS quản lý; mỗi mục áp dụng chuẩn 200–350 chữ để cân bằng độ đầy đủ và khả năng đọc trên website.
 
-## Thi thử
+## Làm bài tập
 - HSK 1–9: 20 đề/cấp = 180 đề.
 - Nâng cao: 20.
 - Cao cấp: 20.

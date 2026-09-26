@@ -1,6 +1,6 @@
 # wednhn-main — Website Nhà Hán Ngữ
 
-Source website chính `nhahanngu.io.vn`, tách biệt với `ctt.nhahanngu.io.vn` nhưng giữ cùng DNA nhận diện.
+Source website chính `nhahanngu.io.vn`, tách biệt với `app.nhahanngu.io.vn` nhưng giữ cùng DNA nhận diện.
 
 ## Stack
 - React 19 + TypeScript + Vite
@@ -12,12 +12,12 @@ Source website chính `nhahanngu.io.vn`, tách biệt với `ctt.nhahanngu.io.vn
 ## Public site
 - Website hoàn chỉnh theo nhận diện đỏ/vàng của Nhà Hán Ngữ.
 - Không hiển thị thông tin quản trị/placeholder trên public site.
-- 50 mục nội dung nền đã được biên soạn sẵn; mỗi mục tối thiểu 1.860 từ, vượt chuẩn 800 từ và cả mốc 1.500 từ.
+- 50 mục nội dung nền đã được biên soạn sẵn; mỗi mục nội dung chính được rút gọn trong khoảng 200–350 chữ để dễ đọc trên website.
 - Nếu D1 chưa chạy seed, frontend vẫn có nội dung built-in để tránh trang trắng/placeholder.
 - Sau khi chạy migrations, nội dung được lưu D1 và có thể chỉnh toàn bộ từ Admin.
 - Font public được harden cho tiếng Việt + chữ Hán, tránh font serif gây tách/gãy chữ.
 
-## Thi thử
+## Làm bài tập
 - 260 đề được seed sẵn và Published:
   - HSK 1–9: 180 đề (20 đề/cấp)
   - Nâng cao: 20 đề
@@ -36,7 +36,7 @@ Source website chính `nhahanngu.io.vn`, tách biệt với `ctt.nhahanngu.io.vn
 - `/admin` có Initial Setup. Chỉ tài khoản gốc được tự khởi tạo lần đầu.
 - Không có đăng ký tài khoản công khai.
 - CMS CRUD cho: Về NHN, Học Hán Ngữ, Kho học liệu, Kiến thức, Tin tức, Cộng đồng, Đối tác, Liên hệ.
-- Quy tắc Publish: các mục nội dung công khai phải đạt tối thiểu 800 từ.
+- Quy tắc Publish: các mục nội dung chính áp dụng chuẩn 200–350 chữ.
 - Media Library upload trực tiếp lên R2.
 - Website settings, màu, logo, menu, SEO, hero, contact, maintenance trong D1.
 - Account / role / permission / audit log.
@@ -114,8 +114,8 @@ Kết quả hoàn chỉnh phải có tối thiểu:
 - `cms_items: 50`
 - `seed_complete: true`
 
-Nếu Admin vào được nhưng Thi thử chưa có đề, nguyên nhân là schema lõi đã tự tạo nhưng **seed migrations chưa được chạy hết**.
+Nếu Admin vào được nhưng Làm bài tập chưa có đề, nguyên nhân là schema lõi đã tự tạo nhưng **seed migrations chưa được chạy hết**.
 
 ## Liên kết ngoài
 
-Mọi liên kết dẫn sang website khác domain (ví dụ Cổng thông tin `ctt.nhahanngu.io.vn`, đối tác, mạng xã hội, tài liệu ngoài) được mở trong **tab mới** và gắn `rel="noopener noreferrer"`. Liên kết nội bộ của `nhahanngu.io.vn` vẫn mở trong cùng tab.
+Mọi liên kết dẫn sang website khác domain (ví dụ Ứng dụng Nhà Hán Ngữ `app.nhahanngu.io.vn`, đối tác, mạng xã hội, tài liệu ngoài) được mở trong **tab mới** và gắn `rel="noopener noreferrer"`. Liên kết nội bộ của `nhahanngu.io.vn` vẫn mở trong cùng tab.
