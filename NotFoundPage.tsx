@@ -1,0 +1,2 @@
+import React from 'react';
+export function NotFoundPage(){return <section className="page-hero"><div className="container"><span className="kicker">404 · NHÀ HÁN NGỮ</span><h1>Không tìm thấy trang</h1><p>Đường dẫn này không tồn tại hoặc đã được thay đổi.</p><div className="hero-actions"><a className="btn btn-primary" href="/">Về Trang chủ</a><a className="btn btn-ghost" href="/tra-cuu">Tra cứu mã</a></div></div></section>}
