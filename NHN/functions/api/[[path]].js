@@ -1,0 +1,965 @@
+import { ensureRuntimeSchema } from '../_schema';
+const enc = new TextEncoder();
+const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
+const ok = (data = {}) => json({ ok: true, data });
+const err = (message, status = 400) => json({ ok: false, error: message }, status);
+const getCookie = (req, name) => { const m = req.headers.get('cookie')?.match(new RegExp(`(?:^|; )${name}=([^;]*)`)); return m ? decodeURIComponent(m[1]) : null; };
+const setSession = (token, maxAge = 43200) => `nhn_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+const clearSession = () => `nhn_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+const randomHex = (n = 32) => Array.from(crypto.getRandomValues(new Uint8Array(n))).map(x => x.toString(16).padStart(2, '0')).join('');
+const wc = (html = '') => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+const slugify = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/đ/g, 'd').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+async function hashPassword(password, salt = randomHex(16)) { const tagged = salt.includes('$') ? salt : `210000$${salt}`; const [iterRaw, realSalt] = tagged.split('$'); const iterations = Number(iterRaw) || 210000; const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']); const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: enc.encode(realSalt), iterations, hash: 'SHA-256' }, key, 256); return { salt: tagged, hash: Array.from(new Uint8Array(bits)).map(x => x.toString(16).padStart(2, '0')).join('') }; }
+async function verifyPassword(password, salt, expected) { const tagged = salt.includes('$') ? salt : `100000$${salt}`; const hp = await hashPassword(password, tagged); return hp.hash === expected; }
+const isUnsafeMethod = (m) => !['GET', 'HEAD', 'OPTIONS'].includes(m);
+function sameOriginMutation(req) { if (!isUnsafeMethod(req.method.toUpperCase()))
+    return true; const site = req.headers.get('sec-fetch-site'); if (site === 'cross-site')
+    return false; const origin = req.headers.get('origin'); if (!origin)
+    return true; try {
+    return new URL(origin).origin === new URL(req.url).origin;
+}
+catch {
+    return false;
+} }
+const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
+const visitorToken = (req, b = {}) => String(req.headers.get('x-visitor-token') || b.visitor_token || '').trim();
+const safeJson = (v, fallback) => { try {
+    return JSON.parse(v);
+}
+catch {
+    return fallback;
+} };
+const cleanHtml = (html = '') => String(html).replace(/<\s*(script|iframe|object|embed|form|input|button|textarea|select|meta|base)[^>]*>[\s\S]*?<\/\s*\1\s*>/gi, '').replace(/<\s*(script|iframe|object|embed|form|input|button|textarea|select|meta|base)[^>]*\/?>/gi, '').replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/(href|src)\s*=\s*(["'])\s*javascript:[\s\S]*?\2/gi, '$1="#"');
+const allowedUpload = (file, publicDoc = false) => { const ext = (file.name.split('.').pop() || '').toLowerCase(); const image = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg']; const docs = ['pdf', 'txt', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip']; const okExt = (publicDoc ? [...image, ...docs] : image).includes(ext); const mime = String(file.type || '').toLowerCase(); const okMime = publicDoc ? (mime.startsWith('image/') || ['application/pdf', 'text/plain', 'text/csv', 'application/zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'].includes(mime)) : (mime.startsWith('image/')); return okExt && okMime; };
+async function formRateLimited(env, req, key) { const ip = req.headers.get('cf-connecting-ip') || 'unknown', bucket = new Date().toISOString().slice(0, 13), raw = `form|${key}|${ip}|${bucket}`; const digest = await crypto.subtle.digest('SHA-256', enc.encode(raw)); const id = 'form-' + Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join(''); const row = await env.DB.prepare(`SELECT attempts FROM auth_rate_limits WHERE id=?`).bind(id).first(); if (Number(row?.attempts || 0) >= 20)
+    return true; await env.DB.prepare(`INSERT INTO auth_rate_limits(id,attempts,window_started_at) VALUES(?,1,datetime('now')) ON CONFLICT(id) DO UPDATE SET attempts=attempts+1`).bind(id).run(); return false; }
+async function loginRateLimited(env, req, email) { const ip = req.headers.get('cf-connecting-ip') || 'unknown'; const key = await crypto.subtle.digest('SHA-256', enc.encode(`${ip}|${String(email || '').toLowerCase()}`)); const id = Array.from(new Uint8Array(key)).map(x => x.toString(16).padStart(2, '0')).join(''); const row = await env.DB.prepare(`SELECT attempts,window_started_at FROM auth_rate_limits WHERE id=?`).bind(id).first(); if (!row)
+    return { blocked: false, id }; const fresh = Date.now() - Date.parse(row.window_started_at) < 15 * 60 * 1000; return { blocked: fresh && Number(row.attempts) >= 8, id }; }
+async function recordLoginFailure(env, id) { await env.DB.prepare(`INSERT INTO auth_rate_limits(id,attempts,window_started_at) VALUES(?,1,datetime('now')) ON CONFLICT(id) DO UPDATE SET attempts=CASE WHEN datetime(window_started_at,'+15 minutes')>datetime('now') THEN attempts+1 ELSE 1 END,window_started_at=CASE WHEN datetime(window_started_at,'+15 minutes')>datetime('now') THEN window_started_at ELSE datetime('now') END`).bind(id).run(); }
+async function auth(req, env) { const token = getCookie(req, 'nhn_session'); if (!token)
+    return null; const row = await env.DB.prepare(`SELECT a.id,a.name,a.email,a.status,a.is_root,s.expires_at FROM admin_sessions s JOIN admins a ON a.id=s.admin_id WHERE s.token=? LIMIT 1`).bind(token).first(); if (!row || row.status !== 'active' || Date.parse(row.expires_at) <= Date.now())
+    return null; return row; }
+async function audit(env, adminId, action, entity, entityId, details, req) { await env.DB.prepare(`INSERT INTO audit_logs(id,admin_id,action,entity,entity_id,details_json,ip,user_agent,created_at) VALUES(?,?,?,?,?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(), adminId, action, entity, entityId, JSON.stringify(details || {}), req.headers.get('cf-connecting-ip') || '', req.headers.get('user-agent') || '').run(); }
+async function allowed(env, a, code) { if (a?.is_root)
+    return true; const r = await env.DB.prepare(`SELECT 1 ok FROM admin_roles ar JOIN role_permissions rp ON rp.role_id=ar.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ar.admin_id=? AND p.code=? LIMIT 1`).bind(a.id, code).first(); return !!r; }
+async function guard(ctx, permission) { const a = await auth(ctx.request, ctx.env); if (!a)
+    return { error: err('Chưa đăng nhập.', 401), admin: null }; if (permission && !(await allowed(ctx.env, a, permission)))
+    return { error: err('Bạn không có quyền thực hiện thao tác này.', 403), admin: a }; return { error: null, admin: a }; }
+async function body(req) { try {
+    return await req.json();
+}
+catch {
+    return {};
+} }
+const pathParts = (ctx) => (ctx.params.path || []).filter(Boolean);
+const PUBLIC_DOC_INDEX = 'system/public-documents.json';
+const VERIFY_INDEX = 'system/verification-index.json';
+const normalizeVerifyCode = (v) => String(v || '').trim().toUpperCase().replace(/\s+/g, '-').replace(/[^A-Z0-9_-]/g, '').slice(0, 80);
+async function r2Json(env, key, fallback) { try {
+    if (!env.MEDIA)
+        return fallback;
+    const o = await env.MEDIA.get(key);
+    if (!o)
+        return fallback;
+    return await o.json();
+}
+catch (e) {
+    console.error('R2_JSON_READ_FAILED', key, e);
+    return fallback;
+} }
+async function putR2Json(env, key, data) { if (!env.MEDIA)
+    throw new Error('STORAGE_UNAVAILABLE'); await env.MEDIA.put(key, JSON.stringify(data, null, 2), { httpMetadata: { contentType: 'application/json; charset=utf-8' } }); }
+async function safeAudit(env, adminId, action, entity, entityId, details, req) { try {
+    await audit(env, adminId, action, entity, entityId, details, req);
+}
+catch (e) {
+    console.error('AUDIT_NONBLOCKING_FAILED', e);
+} }
+async function validateExam(env, id, checkR2 = false) { const exam = await env.DB.prepare(`SELECT * FROM exams WHERE id=?`).bind(id).first(); if (!exam)
+    return { exists: false, valid: false, errors: ['Không tìm thấy đề.'], questionCount: 0 }; const qs = await env.DB.prepare(`SELECT q.*, (SELECT COUNT(*) FROM question_options o WHERE o.question_id=q.id) option_count, (SELECT COUNT(*) FROM question_options o WHERE o.question_id=q.id AND o.is_correct=1) correct_count FROM questions q WHERE q.exam_id=? ORDER BY q.position`).bind(id).all(); const rows = qs.results || []; const errors = []; if (rows.length !== 50)
+    errors.push(`Đề phải có đúng 50 câu, hiện có ${rows.length}.`); const positions = new Set(); for (const q of rows) {
+    if (q.position < 1 || q.position > 50)
+        errors.push(`Câu có vị trí ${q.position} nằm ngoài 1–50.`);
+    if (positions.has(q.position))
+        errors.push(`Trùng số câu ${q.position}.`);
+    positions.add(q.position);
+    if (!String(q.content || '').trim())
+        errors.push(`Câu ${q.position}: thiếu nội dung.`);
+    if (Number(q.correct_count) !== 1)
+        errors.push(`Câu ${q.position}: phải có đúng 1 đáp án đúng.`);
+    if (Number(q.option_count) < 2)
+        errors.push(`Câu ${q.position}: thiếu phương án trả lời.`);
+    if (q.type === 'listening_tts' && !String(q.tts_text || '').trim())
+        errors.push(`Câu ${q.position}: thiếu nội dung phát nghe.`);
+    if (q.requires_audio && !q.audio_key)
+        errors.push(`Câu ${q.position}: thiếu audio.`);
+    if (q.requires_audio && q.audio_key && checkR2) {
+        const o = await env.MEDIA.head(q.audio_key);
+        if (!o)
+            errors.push(`Câu ${q.position}: audio không tồn tại trên R2.`);
+    }
+    if (exam.require_explanation && !String(q.explanation || '').trim())
+        errors.push(`Câu ${q.position}: thiếu giải thích.`);
+    if (Number(q.points) <= 0)
+        errors.push(`Câu ${q.position}: điểm không hợp lệ.`);
+} for (let i = 1; i <= 50; i++)
+    if (!positions.has(i))
+        errors.push(`Thiếu câu số ${i}.`); if (Number(exam.duration_minutes) <= 0)
+    errors.push('Thời gian làm bài không hợp lệ.'); return { exists: true, valid: errors.length === 0, errors, questionCount: rows.length, exam }; }
+export const onRequest = async (ctx) => {
+    const parts = pathParts(ctx), path = '/' + parts.join('/'), method = ctx.request.method.toUpperCase();
+    try {
+        if (!sameOriginMutation(ctx.request))
+            return err('Yêu cầu không hợp lệ.', 403);
+        // Các route công khai không bắt buộc D1: file R2 và cấu hình mặc định.
+        // Public documents + verification run on R2 and do not require D1.
+        if (path === '/public/resources' && method === 'GET') {
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const index = await r2Json(ctx.env, PUBLIC_DOC_INDEX, []);
+            const visible = (Array.isArray(index) ? index : []).filter((x) => x && x.status !== 'hidden').map((x) => ({ ...x, url: x.r2_key ? `/api/media/file/${encodeURIComponent(x.r2_key)}` : x.url || '' }));
+            if (visible.length)
+                return ok(visible);
+            try {
+                const listed = await ctx.env.MEDIA.list({ prefix: 'public-resources/', limit: 200 });
+                return ok((listed.objects || []).map((o) => ({ id: `r2:${o.key}`, title: (o.key.split('/').pop() || o.key).replace(/[-_]+/g, ' '), category: 'Tài liệu', description: '', filename: o.key.split('/').pop() || o.key, r2_key: o.key, size_bytes: o.size || 0, created_at: o.uploaded?.toISOString?.() || '', status: 'published', url: `/api/media/file/${encodeURIComponent(o.key)}`, storage_mode: 'r2-fallback' })));
+            }
+            catch (e) {
+                console.error('PUBLIC_RESOURCES_FAILED', e);
+                return err('STORAGE_UNAVAILABLE', 503);
+            }
+        }
+        if (parts[0] === 'public' && parts[1] === 'verify' && parts[2] && method === 'GET') {
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const code = normalizeVerifyCode(decodeURIComponent(parts.slice(2).join('/')));
+            if (!code)
+                return err('Mã tra cứu không hợp lệ.', 400);
+            const rec = await r2Json(ctx.env, `verification/${code}.json`, null);
+            if (!rec)
+                return err('Không tìm thấy mã.', 404);
+            return ok({ code: rec.code || code, recipient_name: rec.recipient_name || '', item_name: rec.item_name || '', program_name: rec.program_name || '', issued_at: rec.issued_at || '', expires_at: rec.expires_at || '', issuer: rec.issuer || 'Nhà Hán Ngữ', status: rec.status || 'active', public_note: rec.public_note || '', verification_url: `/tra-cuu?code=${encodeURIComponent(code)}` });
+        }
+        if (parts[0] === 'media' && parts[1] === 'file' && parts.length >= 3 && method === 'GET') {
+            if (!ctx.env.MEDIA)
+                return new Response('Storage unavailable', { status: 503 });
+            const key = decodeURIComponent(parts.slice(2).join('/'));
+            const obj = await ctx.env.MEDIA.get(key);
+            if (!obj)
+                return new Response('Not found', { status: 404 });
+            const h = new Headers();
+            obj.writeHttpMetadata(h);
+            h.set('etag', obj.httpEtag);
+            h.set('cache-control', 'public,max-age=86400');
+            return new Response(obj.body, { headers: h });
+        }
+        if (path === '/site/config' && method === 'GET') {
+            if (!ctx.env.DB)
+                return ok({});
+            try {
+                const rows = await ctx.env.DB.prepare(`SELECT key,value FROM site_settings`).all();
+                return ok(Object.fromEntries((rows.results || []).map((r) => [r.key, r.value])));
+            }
+            catch (e) {
+                console.error('SITE_CONFIG_FALLBACK', e);
+                return ok({});
+            }
+        }
+        if (!ctx.env.DB)
+            return err('DATABASE_UNAVAILABLE', 503);
+        await ensureRuntimeSchema(ctx.env);
+        if (path === '/system/health' && method === 'GET')
+            return ok({ status: 'ok' });
+        if (path === '/admin/system/health' && method === 'GET') {
+            const g = await guard(ctx, 'settings.manage');
+            if (g.error)
+                return g.error;
+            const a = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM admins`).first();
+            const e = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM exams`).first();
+            const q = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM questions`).first();
+            const c = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM cms_items`).first();
+            return ok({ d1: true, r2: !!ctx.env.MEDIA, admins: Number(a?.c || 0), exams: Number(e?.c || 0), questions: Number(q?.c || 0), cms_items: Number(c?.c || 0), seed_complete: Number(e?.c || 0) >= 260 && Number(q?.c || 0) >= 13000 });
+        }
+        // AUTH
+        if (path === '/auth/status' && method === 'GET') {
+            const c = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM admins`).first();
+            const a = await auth(ctx.request, ctx.env);
+            return ok({ initialized: Number(c?.c || 0) > 0, authenticated: !!a, admin: a ? { id: a.id, name: a.name, email: a.email, is_root: !!a.is_root } : null });
+        }
+        if (path === '/auth/setup' && method === 'POST') {
+            const c = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM admins`).first();
+            if (Number(c?.c || 0) > 0)
+                return err('Hệ thống đã được khởi tạo.', 409);
+            const b = await body(ctx.request);
+            if (ctx.env.SETUP_SECRET && String(b.setup_secret || ctx.request.headers.get('x-setup-secret') || '') !== ctx.env.SETUP_SECRET)
+                return err('Setup secret không hợp lệ.', 403);
+            if (!b.name || !b.email || !b.password)
+                return err('Vui lòng nhập đủ thông tin.');
+            if (!validEmail(b.email))
+                return err('Email không hợp lệ.', 422);
+            if (String(b.password).length < 10)
+                return err('Mật khẩu phải có ít nhất 10 ký tự.');
+            const hp = await hashPassword(b.password), id = crypto.randomUUID();
+            await ctx.env.DB.prepare(`INSERT INTO admins(id,name,email,password_hash,password_salt,status,is_root,created_at) VALUES(?,?,?,?,?,'active',1,datetime('now'))`).bind(id, b.name, String(b.email).toLowerCase(), hp.hash, hp.salt).run();
+            await ctx.env.DB.prepare(`INSERT OR REPLACE INTO system_settings(key,value,updated_at) VALUES('system_initialized','true',datetime('now'))`).run();
+            const token = randomHex(32), expires = new Date(Date.now() + 43200e3).toISOString();
+            await ctx.env.DB.prepare(`INSERT INTO admin_sessions(token,admin_id,expires_at,created_at) VALUES(?,?,?,datetime('now'))`).bind(token, id, expires).run();
+            await audit(ctx.env, id, 'system.setup', 'system', null, { email: b.email }, ctx.request);
+            return json({ ok: true, data: { initialized: true } }, 200, { 'set-cookie': setSession(token) });
+        }
+        if (path === '/auth/login' && method === 'POST') {
+            const b = await body(ctx.request);
+            ctx.waitUntil(ctx.env.DB.batch([ctx.env.DB.prepare(`DELETE FROM admin_sessions WHERE expires_at<=datetime('now')`), ctx.env.DB.prepare(`DELETE FROM auth_rate_limits WHERE window_started_at<datetime('now','-2 days')`)]).then(() => { }));
+            const rate = await loginRateLimited(ctx.env, ctx.request, b.email || '');
+            if (rate.blocked)
+                return err('Có quá nhiều lần đăng nhập không thành công. Vui lòng thử lại sau.', 429);
+            const u = await ctx.env.DB.prepare(`SELECT * FROM admins WHERE lower(email)=lower(?) LIMIT 1`).bind(b.email || '').first();
+            if (!u || u.status !== 'active') {
+                await recordLoginFailure(ctx.env, rate.id);
+                return err('Email hoặc mật khẩu không đúng.', 401);
+            }
+            if (!(await verifyPassword(b.password || '', u.password_salt, u.password_hash))) {
+                await recordLoginFailure(ctx.env, rate.id);
+                return err('Email hoặc mật khẩu không đúng.', 401);
+            }
+            await ctx.env.DB.prepare(`DELETE FROM auth_rate_limits WHERE id=?`).bind(rate.id).run();
+            if (!String(u.password_salt).includes('$') || Number(String(u.password_salt).split('$')[0]) < 210000) {
+                const upgraded = await hashPassword(b.password || '');
+                await ctx.env.DB.prepare(`UPDATE admins SET password_hash=?,password_salt=? WHERE id=?`).bind(upgraded.hash, upgraded.salt, u.id).run();
+            }
+            const token = randomHex(32), exp = new Date(Date.now() + 43200e3).toISOString();
+            await ctx.env.DB.prepare(`INSERT INTO admin_sessions(token,admin_id,expires_at,created_at) VALUES(?,?,?,datetime('now'))`).bind(token, u.id, exp).run();
+            await ctx.env.DB.prepare(`UPDATE admins SET last_login_at=datetime('now') WHERE id=?`).bind(u.id).run();
+            await audit(ctx.env, u.id, 'auth.login', 'admin', u.id, {}, ctx.request);
+            return json({ ok: true, data: { name: u.name, email: u.email } }, 200, { 'set-cookie': setSession(token) });
+        }
+        if (path === '/auth/logout' && method === 'POST') {
+            const token = getCookie(ctx.request, 'nhn_session'), a = await auth(ctx.request, ctx.env);
+            if (token)
+                await ctx.env.DB.prepare(`DELETE FROM admin_sessions WHERE token=?`).bind(token).run();
+            if (a)
+                await audit(ctx.env, a.id, 'auth.logout', 'admin', a.id, {}, ctx.request);
+            return json({ ok: true, data: {} }, 200, { 'set-cookie': clearSession() });
+        }
+        // PUBLIC SITE CONFIG + CMS
+        if (parts[0] === 'public' && parts[1] === 'cms' && method === 'GET') {
+            const module = parts[2] || '';
+            const rows = await ctx.env.DB.prepare(`SELECT id,module,slug,title,status,position,data_json,updated_at FROM cms_items WHERE module=? AND status='published' ORDER BY position,updated_at DESC`).bind(module).all();
+            return ok((rows.results || []).map((r) => ({ ...r, data: JSON.parse(r.data_json || '{}') })));
+        }
+        if (path === '/public/exams' && method === 'GET') {
+            const u = new URL(ctx.request.url), group = u.searchParams.get('group'), level = u.searchParams.get('level');
+            let sql = `SELECT id,code,title,group_key,level,duration_minutes,description,total_points,published_at FROM exams WHERE status='published'`, binds = [];
+            if (group) {
+                sql += ` AND group_key=?`;
+                binds.push(group);
+            }
+            if (level) {
+                sql += ` AND level=?`;
+                binds.push(level);
+            }
+            sql += ` ORDER BY group_key,level,code`;
+            const q = ctx.env.DB.prepare(sql);
+            const rows = binds.length ? await q.bind(...binds).all() : await q.all();
+            return ok(rows.results || []);
+        }
+        if (parts[0] === 'public' && parts[1] === 'exams' && parts[2] && method === 'GET') {
+            const id = parts[2];
+            const e = await ctx.env.DB.prepare(`SELECT id,code,title,group_key,level,duration_minutes,description,instructions,total_points FROM exams WHERE id=? AND status='published'`).bind(id).first();
+            if (!e)
+                return err('Không tìm thấy đề đã xuất bản.', 404);
+            const qs = await ctx.env.DB.prepare(`SELECT id,position,type,content,audio_key,image_key,points,tts_text FROM questions WHERE exam_id=? ORDER BY position`).bind(id).all();
+            for (const q of qs.results || []) {
+                const os = await ctx.env.DB.prepare(`SELECT id,label,content,position FROM question_options WHERE question_id=? ORDER BY position`).bind(q.id).all();
+                q.options = os.results || [];
+                if (q.audio_key)
+                    q.audio_url = `/api/media/file/${encodeURIComponent(q.audio_key)}`;
+                if (q.image_key)
+                    q.image_url = `/api/media/file/${encodeURIComponent(q.image_key)}`;
+            }
+            return ok({ exam: e, questions: qs.results || [] });
+        }
+        if (parts[0] === 'public' && parts[1] === 'attempts' && parts[2] === 'start' && method === 'POST') {
+            const b = await body(ctx.request), token = visitorToken(ctx.request, b);
+            if (!token || token.length < 16)
+                return err('Visitor token không hợp lệ.', 422);
+            const exam = await ctx.env.DB.prepare(`SELECT id,duration_minutes FROM exams WHERE id=? AND status='published'`).bind(b.exam_id).first();
+            if (!exam)
+                return err('Đề chưa được xuất bản.', 404);
+            const active = await ctx.env.DB.prepare(`SELECT id,started_at,deadline_at FROM exam_attempts WHERE exam_id=? AND visitor_token=? AND status='in_progress' ORDER BY started_at DESC LIMIT 1`).bind(b.exam_id, token).first();
+            if (active && Date.parse(active.deadline_at || active.started_at) > Date.now())
+                return ok({ attempt_id: active.id, visitor_token: token, resumed: true, deadline_at: active.deadline_at });
+            if (active)
+                await ctx.env.DB.prepare(`UPDATE exam_attempts SET status='expired',submitted_at=COALESCE(submitted_at,datetime('now')) WHERE id=?`).bind(active.id).run();
+            const id = crypto.randomUUID(), deadline = new Date(Date.now() + Number(exam.duration_minutes || 60) * 60000).toISOString();
+            await ctx.env.DB.prepare(`INSERT INTO exam_attempts(id,exam_id,visitor_id,visitor_token,started_at,status,deadline_at,last_activity_at) VALUES(?,?,?,?,datetime('now'),'in_progress',?,datetime('now'))`).bind(id, b.exam_id, token, token, deadline).run();
+            return ok({ attempt_id: id, visitor_token: token, deadline_at: deadline, resumed: false });
+        }
+        if (parts[0] === 'public' && parts[1] === 'attempts' && parts[2] && parts[3] === 'resume' && method === 'GET') {
+            const token = visitorToken(ctx.request, {}), attemptId = parts[2];
+            if (!token)
+                return err('Thiếu visitor token.', 401);
+            const a = await ctx.env.DB.prepare(`SELECT a.*,e.duration_minutes FROM exam_attempts a JOIN exams e ON e.id=a.exam_id WHERE a.id=? AND a.visitor_token=?`).bind(attemptId, token).first();
+            if (!a)
+                return err('Không tìm thấy lượt làm bài.', 404);
+            if (a.status === 'in_progress' && a.deadline_at && Date.parse(a.deadline_at) <= Date.now())
+                await ctx.env.DB.prepare(`UPDATE exam_attempts SET status='expired',submitted_at=COALESCE(submitted_at,datetime('now')) WHERE id=?`).bind(attemptId).run();
+            const answers = await ctx.env.DB.prepare(`SELECT question_id,answer_json FROM exam_answers WHERE attempt_id=?`).bind(attemptId).all();
+            return ok({ attempt_id: a.id, exam_id: a.exam_id, status: (a.status === 'in_progress' && a.deadline_at && Date.parse(a.deadline_at) <= Date.now()) ? 'expired' : a.status, deadline_at: a.deadline_at, answers: Object.fromEntries((answers.results || []).map((x) => [x.question_id, safeJson(x.answer_json, null)])) });
+        }
+        if (parts[0] === 'public' && parts[1] === 'attempts' && parts[2] && parts[3] === 'answer' && method === 'PUT') {
+            const attemptId = parts[2], b = await body(ctx.request), token = visitorToken(ctx.request, b);
+            if (!token)
+                return err('Thiếu visitor token.', 401);
+            const a = await ctx.env.DB.prepare(`SELECT id,exam_id,status,deadline_at FROM exam_attempts WHERE id=? AND visitor_token=?`).bind(attemptId, token).first();
+            if (!a || a.status !== 'in_progress')
+                return err('Lượt làm bài không hợp lệ.', 409);
+            if (a.deadline_at && Date.parse(a.deadline_at) <= Date.now()) {
+                await ctx.env.DB.prepare(`UPDATE exam_attempts SET status='expired',submitted_at=COALESCE(submitted_at,datetime('now')) WHERE id=?`).bind(attemptId).run();
+                return err('Đã hết thời gian làm bài.', 409);
+            }
+            const q = await ctx.env.DB.prepare(`SELECT id FROM questions WHERE id=? AND exam_id=?`).bind(b.question_id, a.exam_id).first();
+            if (!q)
+                return err('Câu hỏi không thuộc đề này.', 422);
+            const option = await ctx.env.DB.prepare(`SELECT id FROM question_options WHERE id=? AND question_id=?`).bind(String(b.answer || ''), b.question_id).first();
+            if (!option)
+                return err('Đáp án không hợp lệ.', 422);
+            const existing = await ctx.env.DB.prepare(`SELECT id FROM exam_answers WHERE attempt_id=? AND question_id=?`).bind(attemptId, b.question_id).first();
+            if (existing)
+                await ctx.env.DB.prepare(`UPDATE exam_answers SET answer_json=?,updated_at=datetime('now') WHERE id=?`).bind(JSON.stringify(b.answer), existing.id).run();
+            else
+                await ctx.env.DB.prepare(`INSERT INTO exam_answers(id,attempt_id,question_id,answer_json,updated_at) VALUES(?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(), attemptId, b.question_id, JSON.stringify(b.answer)).run();
+            await ctx.env.DB.prepare(`UPDATE exam_attempts SET last_activity_at=datetime('now') WHERE id=?`).bind(attemptId).run();
+            return ok({ saved: true, deadline_at: a.deadline_at });
+        }
+        if (parts[0] === 'public' && parts[1] === 'attempts' && parts[2] && parts[3] === 'submit' && method === 'POST') {
+            const attemptId = parts[2], b = await body(ctx.request), token = visitorToken(ctx.request, b);
+            if (!token)
+                return err('Thiếu visitor token.', 401);
+            const a = await ctx.env.DB.prepare(`SELECT * FROM exam_attempts WHERE id=? AND visitor_token=?`).bind(attemptId, token).first();
+            if (!a || !['in_progress', 'expired'].includes(a.status))
+                return err('Lượt làm bài không hợp lệ.', 409);
+            const qs = await ctx.env.DB.prepare(`SELECT q.id,q.position,q.points,q.explanation FROM questions q WHERE q.exam_id=? ORDER BY q.position`).bind(a.exam_id).all();
+            let score = 0, correct = 0, wrong = 0, blank = 0;
+            const review = [];
+            for (const q of qs.results || []) {
+                const ans = await ctx.env.DB.prepare(`SELECT * FROM exam_answers WHERE attempt_id=? AND question_id=?`).bind(attemptId, q.id).first();
+                const corr = await ctx.env.DB.prepare(`SELECT id,label,content FROM question_options WHERE question_id=? AND is_correct=1 LIMIT 1`).bind(q.id).first();
+                let chosen = null;
+                if (ans)
+                    chosen = safeJson(ans.answer_json, ans.answer_json);
+                const isCorrect = !!chosen && chosen === corr?.id;
+                if (!chosen)
+                    blank++;
+                else if (isCorrect) {
+                    correct++;
+                    score += Number(q.points || 1);
+                }
+                else
+                    wrong++;
+                if (ans)
+                    await ctx.env.DB.prepare(`UPDATE exam_answers SET is_correct=?,points=? WHERE id=?`).bind(isCorrect ? 1 : 0, isCorrect ? Number(q.points || 1) : 0, ans.id).run();
+                review.push({ question_id: q.id, position: q.position, chosen, correct_option: corr, explanation: q.explanation, is_correct: isCorrect });
+            }
+            const started = Date.parse(a.started_at), duration = Math.max(0, Math.round((Date.now() - started) / 1000)), expired = !!a.deadline_at && Date.parse(a.deadline_at) < Date.now();
+            await ctx.env.DB.prepare(`UPDATE exam_attempts SET status='submitted',submitted_at=datetime('now'),score=?,correct_count=?,wrong_count=?,blank_count=?,duration_seconds=?,result_json=? WHERE id=?`).bind(score, correct, wrong, blank, duration, JSON.stringify(review), attemptId).run();
+            return ok({ score, correct, wrong, blank, duration_seconds: duration, expired, review });
+        }
+        // ADMIN DASHBOARD
+        if (path === '/admin/stats' && method === 'GET') {
+            const g = await guard(ctx, 'dashboard.view');
+            if (g.error)
+                return g.error;
+            const tables = ['cms_items', 'media', 'exams', 'questions', 'form_submissions', 'admins'];
+            const out = {};
+            for (const t of tables) {
+                const r = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM ${t}`).first();
+                out[t] = Number(r?.c || 0);
+            }
+            const pub = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM exams WHERE status='published'`).first();
+            out.published_exams = Number(pub?.c || 0);
+            return ok(out);
+        }
+        // SETTINGS
+        if (path === '/admin/settings' && method === 'GET') {
+            const g = await guard(ctx, 'site.view');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT key,value FROM site_settings ORDER BY key`).all();
+            return ok(Object.fromEntries((rows.results || []).map((r) => [r.key, r.value])));
+        }
+        if (path === '/admin/settings' && method === 'PUT') {
+            const g = await guard(ctx, 'site.manage');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request);
+            for (const key of ['navigation_json', 'homepage_sections_json'])
+                if (key in b) {
+                    const parsed = safeJson(String(b[key]), null);
+                    if (!Array.isArray(parsed))
+                        return err(`${key} phải là JSON array hợp lệ.`, 422);
+                }
+            for (const [k, v] of Object.entries(b || {})) {
+                const old = await ctx.env.DB.prepare(`SELECT value FROM site_settings WHERE key=?`).bind(k).first();
+                await ctx.env.DB.prepare(`INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=datetime('now')`).bind(k, String(v ?? '')).run();
+                await ctx.env.DB.prepare(`INSERT INTO site_revisions(id,key,old_value,new_value,changed_by,created_at) VALUES(?,?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(), k, old?.value || null, String(v ?? ''), g.admin.id).run();
+            }
+            await audit(ctx.env, g.admin.id, 'site.settings.update', 'site', null, { keys: Object.keys(b || {}) }, ctx.request);
+            return ok({ saved: true });
+        }
+        // GENERIC CMS
+        if (parts[0] === 'admin' && parts[1] === 'cms' && parts[2]) {
+            const module = parts[2], id = parts[3];
+            if (method === 'GET' && !id) {
+                const g = await guard(ctx, 'content.view');
+                if (g.error)
+                    return g.error;
+                const u = new URL(ctx.request.url), q = u.searchParams.get('q') || '';
+                const rows = await ctx.env.DB.prepare(`SELECT * FROM cms_items WHERE module=? AND (title LIKE ? OR slug LIKE ?) ORDER BY position,updated_at DESC`).bind(module, `%${q}%`, `%${q}%`).all();
+                return ok((rows.results || []).map((r) => ({ ...r, data: JSON.parse(r.data_json || '{}') })));
+            }
+            if (method === 'GET' && id) {
+                const g = await guard(ctx, 'content.view');
+                if (g.error)
+                    return g.error;
+                const r = await ctx.env.DB.prepare(`SELECT * FROM cms_items WHERE id=? AND module=?`).bind(id, module).first();
+                if (!r)
+                    return err('Không tìm thấy nội dung.', 404);
+                return ok({ ...r, data: JSON.parse(r.data_json || '{}') });
+            }
+            if (method === 'POST' && !id) {
+                const g = await guard(ctx, 'content.create');
+                if (g.error)
+                    return g.error;
+                const b = await body(ctx.request), nid = crypto.randomUUID(), title = String(b.title || 'Mục mới'), slug = b.slug || slugify(title) + '-' + Date.now().toString(36);
+                await ctx.env.DB.prepare(`INSERT INTO cms_items(id,module,slug,title,status,position,data_json,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`).bind(nid, module, slug, title, b.status || 'draft', Number(b.position || 0), JSON.stringify(b.data || {}), g.admin.id, g.admin.id).run();
+                await audit(ctx.env, g.admin.id, 'cms.create', module, nid, { title, slug }, ctx.request);
+                return ok({ id: nid });
+            }
+            if (method === 'PUT' && id) {
+                const g = await guard(ctx, 'content.edit');
+                if (g.error)
+                    return g.error;
+                const b = await body(ctx.request), old = await ctx.env.DB.prepare(`SELECT * FROM cms_items WHERE id=?`).bind(id).first();
+                if (!old)
+                    return err('Không tìm thấy nội dung.', 404);
+                const status = b.status || old.status;
+                if (status === 'published' && old.status !== 'published' && !(await allowed(ctx.env, g.admin, 'content.publish')))
+                    return err('Bạn không có quyền xuất bản nội dung.', 403);
+                if (status === 'published') {
+                    const text = String(b.data?.body_html || b.data?.body || '');
+                    if (['pages', 'posts', 'learning', 'resources', 'knowledge', 'community'].includes(module)) {
+                        const words = wc(text);
+                        if (words < 200 || words > 350)
+                            return err(`Nội dung xuất bản phải từ 200 đến 350 từ. Hiện có ${words} từ.`, 422);
+                    }
+                }
+                await ctx.env.DB.prepare(`INSERT INTO content_versions(id,entity_type,entity_id,data_json,created_by,created_at) VALUES(?,?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(), `cms:${module}`, id, JSON.stringify(old), g.admin.id).run();
+                await ctx.env.DB.prepare(`UPDATE cms_items SET slug=?,title=?,status=?,position=?,data_json=?,updated_by=?,updated_at=datetime('now') WHERE id=?`).bind(b.slug || old.slug, b.title || old.title, status, Number(b.position ?? old.position), JSON.stringify((() => { const d = b.data ?? JSON.parse(old.data_json || '{}'); if (d && typeof d === 'object') {
+                    if (typeof d.body_html === 'string')
+                        d.body_html = cleanHtml(d.body_html);
+                    if (typeof d.body === 'string')
+                        d.body = cleanHtml(d.body);
+                } return d; })()), g.admin.id, id).run();
+                await audit(ctx.env, g.admin.id, 'cms.update', module, id, { status }, ctx.request);
+                return ok({ saved: true });
+            }
+            if (method === 'DELETE' && id) {
+                const g = await guard(ctx, 'content.delete');
+                if (g.error)
+                    return g.error;
+                await ctx.env.DB.prepare(`DELETE FROM cms_items WHERE id=? AND module=?`).bind(id, module).run();
+                await audit(ctx.env, g.admin.id, 'cms.delete', module, id, {}, ctx.request);
+                return ok({ deleted: true });
+            }
+        }
+        // P1 FORM BUILDER + PARTICIPATION
+        if (path === '/public/forms' && method === 'GET') {
+            const rows = await ctx.env.DB.prepare(`SELECT id,form_key,title,schema_json,status FROM forms WHERE status='active' ORDER BY rowid DESC`).all();
+            return ok((rows.results || []).map((r) => ({ ...r, schema: JSON.parse(r.schema_json || '{}') })));
+        }
+        if (parts[0] === 'public' && parts[1] === 'forms' && parts[2] && parts[3] === 'submit' && method === 'POST') {
+            const key = decodeURIComponent(parts[2]), f = await ctx.env.DB.prepare(`SELECT * FROM forms WHERE form_key=? AND status='active'`).bind(key).first();
+            if (!f)
+                return err('Biểu mẫu không tồn tại hoặc đã đóng.', 404);
+            const b = await body(ctx.request), schema = JSON.parse(f.schema_json || '{}'), data = b.data || {};
+            if (String(b.website || '').trim())
+                return ok({ accepted: true });
+            if (await formRateLimited(ctx.env, ctx.request, key))
+                return err('Bạn gửi biểu mẫu quá nhanh. Vui lòng thử lại sau.', 429);
+            for (const q of schema.questions || []) {
+                const value = String(data[q.id] ?? '').trim();
+                if (q.required && !value)
+                    return err(`Vui lòng hoàn thành: ${q.label}`, 422);
+                if (value.length > 5000)
+                    return err(`${q.label}: nội dung quá dài.`, 422);
+                if ((q.type === 'email' || String(q.id).toLowerCase().includes('email')) && value && !validEmail(value))
+                    return err(`${q.label}: email không hợp lệ.`, 422);
+            }
+            const id = crypto.randomUUID(), reference = `NHN-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}-${id.slice(0, 6).toUpperCase()}`;
+            await ctx.env.DB.prepare(`INSERT INTO form_submissions(id,form_id,data_json,status,created_at) VALUES(?,?,?,'new',datetime('now'))`).bind(id, f.id, JSON.stringify({ ...data, _reference: reference })).run();
+            return ok({ id, reference });
+        }
+        if (path === '/admin/forms' && method === 'GET') {
+            const g = await guard(ctx, 'content.view');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT f.*,(SELECT COUNT(*) FROM form_submissions s WHERE s.form_id=f.id) submission_count FROM forms f ORDER BY rowid DESC`).all();
+            return ok((rows.results || []).map((r) => ({ ...r, schema: JSON.parse(r.schema_json || '{}') })));
+        }
+        if (path === '/admin/forms' && method === 'POST') {
+            const g = await guard(ctx, 'content.create');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request), id = crypto.randomUUID(), key = String(b.form_key || `form-${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase(), schema = b.schema || { description: '', questions: [] };
+            await ctx.env.DB.prepare(`INSERT INTO forms(id,form_key,title,schema_json,status) VALUES(?,?,?,?,?)`).bind(id, key, b.title || 'Biểu mẫu mới', JSON.stringify(schema), b.status || 'draft').run();
+            await audit(ctx.env, g.admin.id, 'form.create', 'form', id, { key }, ctx.request);
+            return ok({ id });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'forms' && parts[2] && method === 'PUT') {
+            const g = await guard(ctx, 'content.edit');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request), old = await ctx.env.DB.prepare(`SELECT * FROM forms WHERE id=?`).bind(parts[2]).first();
+            if (!old)
+                return err('Không tìm thấy biểu mẫu.', 404);
+            await ctx.env.DB.prepare(`UPDATE forms SET form_key=?,title=?,schema_json=?,status=? WHERE id=?`).bind(b.form_key || old.form_key, b.title || old.title, JSON.stringify(b.schema ?? JSON.parse(old.schema_json || '{}')), b.status || old.status, parts[2]).run();
+            await audit(ctx.env, g.admin.id, 'form.update', 'form', parts[2], { status: b.status }, ctx.request);
+            return ok({ saved: true });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'forms' && parts[2] && method === 'DELETE') {
+            const g = await guard(ctx, 'content.delete');
+            if (g.error)
+                return g.error;
+            const c = await ctx.env.DB.prepare(`SELECT COUNT(*) c FROM form_submissions WHERE form_id=?`).bind(parts[2]).first();
+            if (Number(c?.c || 0) > 0) {
+                await ctx.env.DB.prepare(`UPDATE forms SET status='archived' WHERE id=?`).bind(parts[2]).run();
+                return ok({ archived: true });
+            }
+            await ctx.env.DB.prepare(`DELETE FROM forms WHERE id=?`).bind(parts[2]).run();
+            return ok({ deleted: true });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'form-submissions' && method === 'GET') {
+            const g = await guard(ctx, 'content.view');
+            if (g.error)
+                return g.error;
+            const fid = new URL(ctx.request.url).searchParams.get('form_id') || '';
+            const rows = await ctx.env.DB.prepare(`SELECT * FROM form_submissions WHERE (?='' OR form_id=?) ORDER BY created_at DESC LIMIT 1000`).bind(fid, fid).all();
+            return ok((rows.results || []).map((r) => ({ ...r, data: JSON.parse(r.data_json || '{}') })));
+        }
+        if (parts[0] === 'admin' && parts[1] === 'form-submissions' && parts[2] && method === 'PUT') {
+            const g = await guard(ctx, 'content.edit');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request);
+            await ctx.env.DB.prepare(`UPDATE form_submissions SET status=? WHERE id=?`).bind(b.status || 'new', parts[2]).run();
+            return ok({ saved: true });
+        }
+        // PUBLIC DOCUMENTS (R2-backed, no content rows in D1)
+        if (path === '/admin/public-documents' && method === 'GET') {
+            const g = await guard(ctx, 'media.view');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const rows = await r2Json(ctx.env, PUBLIC_DOC_INDEX, []);
+            return ok(Array.isArray(rows) ? rows : []);
+        }
+        if (path === '/admin/public-documents' && method === 'POST') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const form = await ctx.request.formData(), file = form.get('file');
+            if (!(file instanceof File))
+                return err('Không tìm thấy file.');
+            if (file.size > 25 * 1024 * 1024)
+                return err('File vượt quá 25MB.');
+            if (!allowedUpload(file, true))
+                return err('Định dạng file không được phép.', 415);
+            const id = crypto.randomUUID(), safe = file.name.normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-'), key = `public-resources/${new Date().toISOString().slice(0, 10)}/${id}-${safe}`;
+            await ctx.env.MEDIA.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+            const rows = await r2Json(ctx.env, PUBLIC_DOC_INDEX, []), rec = { id, title: String(form.get('title') || file.name), category: String(form.get('category') || 'Tài liệu'), description: String(form.get('description') || ''), filename: file.name, mime_type: file.type || 'application/octet-stream', size_bytes: file.size, r2_key: key, status: String(form.get('status') || 'published'), created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+            rows.unshift(rec);
+            await putR2Json(ctx.env, PUBLIC_DOC_INDEX, rows);
+            await safeAudit(ctx.env, g.admin.id, 'public_document.create', 'public_document', id, { key, title: rec.title }, ctx.request);
+            return ok({ ...rec, url: `/api/media/file/${encodeURIComponent(key)}` });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'public-documents' && parts[2] && method === 'PUT') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const b = await body(ctx.request), rows = await r2Json(ctx.env, PUBLIC_DOC_INDEX, []), i = rows.findIndex((x) => x.id === parts[2]);
+            if (i < 0)
+                return err('Không tìm thấy tài liệu.', 404);
+            rows[i] = { ...rows[i], title: b.title ?? rows[i].title, category: b.category ?? rows[i].category, description: b.description ?? rows[i].description, status: b.status ?? rows[i].status, updated_at: new Date().toISOString() };
+            await putR2Json(ctx.env, PUBLIC_DOC_INDEX, rows);
+            await safeAudit(ctx.env, g.admin.id, 'public_document.update', 'public_document', parts[2], b, ctx.request);
+            return ok(rows[i]);
+        }
+        if (parts[0] === 'admin' && parts[1] === 'public-documents' && parts[2] && method === 'DELETE') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const rows = await r2Json(ctx.env, PUBLIC_DOC_INDEX, []), i = rows.findIndex((x) => x.id === parts[2]);
+            if (i < 0)
+                return err('Không tìm thấy tài liệu.', 404);
+            const [rec] = rows.splice(i, 1);
+            if (rec.r2_key)
+                await ctx.env.MEDIA.delete(rec.r2_key);
+            await putR2Json(ctx.env, PUBLIC_DOC_INDEX, rows);
+            await safeAudit(ctx.env, g.admin.id, 'public_document.delete', 'public_document', parts[2], { key: rec.r2_key }, ctx.request);
+            return ok({ deleted: true });
+        }
+        // VERIFICATION RECORDS (R2-backed; public lookup is independent from D1)
+        if (path === '/admin/verifications' && method === 'GET') {
+            const g = await guard(ctx, 'content.view');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const rows = await r2Json(ctx.env, VERIFY_INDEX, []);
+            return ok(Array.isArray(rows) ? rows : []);
+        }
+        if (path === '/admin/verifications' && method === 'POST') {
+            const g = await guard(ctx, 'content.edit');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const b = await body(ctx.request), code = normalizeVerifyCode(b.code);
+            if (!code)
+                return err('Vui lòng nhập mã hợp lệ.');
+            if (!String(b.recipient_name || '').trim())
+                return err('Vui lòng nhập tên người nhận.');
+            const now = new Date().toISOString(), rec = { code, recipient_name: String(b.recipient_name || '').trim(), item_name: String(b.item_name || '').trim(), program_name: String(b.program_name || '').trim(), issued_at: String(b.issued_at || ''), expires_at: String(b.expires_at || ''), issuer: String(b.issuer || 'Nhà Hán Ngữ').trim(), status: String(b.status || 'active'), public_note: String(b.public_note || '').trim(), updated_at: now, created_at: b.created_at || now };
+            await putR2Json(ctx.env, `verification/${code}.json`, rec);
+            const rows = await r2Json(ctx.env, VERIFY_INDEX, []), i = rows.findIndex((x) => x.code === code);
+            if (i >= 0)
+                rows[i] = rec;
+            else
+                rows.unshift(rec);
+            await putR2Json(ctx.env, VERIFY_INDEX, rows.slice(0, 5000));
+            await safeAudit(ctx.env, g.admin.id, 'verification.upsert', 'verification', code, { recipient_name: rec.recipient_name, status: rec.status }, ctx.request);
+            return ok(rec);
+        }
+        if (parts[0] === 'admin' && parts[1] === 'verifications' && parts[2] && method === 'DELETE') {
+            const g = await guard(ctx, 'content.delete');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const code = normalizeVerifyCode(decodeURIComponent(parts.slice(2).join('/')));
+            if (!code)
+                return err('Mã không hợp lệ.');
+            await ctx.env.MEDIA.delete(`verification/${code}.json`);
+            const rows = await r2Json(ctx.env, VERIFY_INDEX, []);
+            await putR2Json(ctx.env, VERIFY_INDEX, rows.filter((x) => x.code !== code));
+            await safeAudit(ctx.env, g.admin.id, 'verification.delete', 'verification', code, {}, ctx.request);
+            return ok({ deleted: true });
+        }
+        // MEDIA
+        if (path === '/media' && method === 'GET') {
+            const g = await guard(ctx, 'media.view');
+            if (g.error)
+                return g.error;
+            const u = new URL(ctx.request.url), q = (u.searchParams.get('q') || '').toLowerCase();
+            try {
+                const rows = await ctx.env.DB.prepare(`SELECT * FROM media WHERE filename LIKE ? OR alt_text LIKE ? ORDER BY created_at DESC LIMIT 500`).bind(`%${q}%`, `%${q}%`).all();
+                return ok((rows.results || []).map((r) => ({ ...r, url: `/api/media/file/${encodeURIComponent(r.r2_key)}`, storage_mode: 'indexed' })));
+            }
+            catch (e) {
+                console.error('MEDIA_D1_FALLBACK', e);
+                const listed = await ctx.env.MEDIA.list({ limit: 500 });
+                const items = (listed.objects || []).filter((o) => !q || String(o.key).toLowerCase().includes(q)).map((o) => ({ id: `r2:${o.key}`, r2_key: o.key, filename: o.key.split('/').pop() || o.key, mime_type: 'application/octet-stream', size_bytes: o.size || 0, folder: o.key.split('/').slice(0, -1).join('/'), created_at: o.uploaded?.toISOString?.() || '', url: `/api/media/file/${encodeURIComponent(o.key)}`, storage_mode: 'r2-only' }));
+                return ok(items);
+            }
+        }
+        if (path === '/media/upload' && method === 'POST') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            const form = await ctx.request.formData(), file = form.get('file');
+            if (!(file instanceof File))
+                return err('Không tìm thấy file.');
+            if (file.size > 15 * 1024 * 1024)
+                return err('File vượt quá 15MB.');
+            if (!allowedUpload(file, false))
+                return err('Media chỉ chấp nhận PNG/JPG/JPEG/WebP/GIF/SVG.', 415);
+            const safe = file.name.normalize('NFKD').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-'), folder = String(form.get('folder') || 'uploads').replace(/[^a-zA-Z0-9/_-]/g, '');
+            const key = `${folder}/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}-${safe}`;
+            await ctx.env.MEDIA.put(key, file.stream(), { httpMetadata: { contentType: file.type || 'application/octet-stream' } });
+            const id = crypto.randomUUID();
+            let storage_mode = 'indexed';
+            try {
+                await ctx.env.DB.prepare(`INSERT INTO media(id,r2_key,filename,mime_type,size_bytes,alt_text,caption,folder,uploaded_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))`).bind(id, key, file.name, file.type, file.size, String(form.get('alt') || ''), String(form.get('caption') || ''), folder, g.admin.id).run();
+                await audit(ctx.env, g.admin.id, 'media.upload', 'media', id, { key, filename: file.name, size: file.size }, ctx.request);
+            }
+            catch (e) {
+                storage_mode = 'r2-only';
+                console.error('MEDIA_INDEX_FAILED', e);
+            }
+            return ok({ id: storage_mode === 'indexed' ? id : `r2:${key}`, key, filename: file.name, url: `/api/media/file/${encodeURIComponent(key)}`, storage_mode });
+        }
+        if (path === '/media/reconcile' && method === 'POST') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            if (!ctx.env.MEDIA)
+                return err('STORAGE_UNAVAILABLE', 503);
+            const listed = await ctx.env.MEDIA.list({ limit: 1000 });
+            let added = 0;
+            for (const o of listed.objects || []) {
+                if (String(o.key).startsWith('system/') || String(o.key).startsWith('verification/'))
+                    continue;
+                const exists = await ctx.env.DB.prepare(`SELECT 1 ok FROM media WHERE r2_key=?`).bind(o.key).first();
+                if (exists)
+                    continue;
+                await ctx.env.DB.prepare(`INSERT INTO media(id,r2_key,filename,mime_type,size_bytes,folder,uploaded_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,datetime('now'),datetime('now'))`).bind(crypto.randomUUID(), o.key, String(o.key).split('/').pop() || o.key, 'application/octet-stream', o.size || 0, String(o.key).split('/').slice(0, -1).join('/'), g.admin.id).run();
+                added++;
+            }
+            await audit(ctx.env, g.admin.id, 'media.reconcile', 'media', null, { added }, ctx.request);
+            return ok({ added });
+        }
+        if (parts[0] === 'media' && parts[1] && method === 'PUT') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request);
+            await ctx.env.DB.prepare(`UPDATE media SET alt_text=?,caption=?,folder=?,updated_at=datetime('now') WHERE id=?`).bind(b.alt_text || '', b.caption || '', b.folder || 'uploads', parts[1]).run();
+            await audit(ctx.env, g.admin.id, 'media.update', 'media', parts[1], b, ctx.request);
+            return ok({ saved: true });
+        }
+        if (parts[0] === 'media' && parts[1] && method === 'DELETE') {
+            const g = await guard(ctx, 'media.manage');
+            if (g.error)
+                return g.error;
+            const m = await ctx.env.DB.prepare(`SELECT * FROM media WHERE id=?`).bind(parts[1]).first();
+            if (!m)
+                return err('Không tìm thấy file.', 404);
+            const refs = await ctx.env.DB.prepare(`SELECT (SELECT COUNT(*) FROM questions WHERE audio_key=? OR image_key=?)+(SELECT COUNT(*) FROM cms_items WHERE data_json LIKE ?) c`).bind(m.r2_key, m.r2_key, `%${m.r2_key}%`).first();
+            if (Number(refs?.c || 0) > 0)
+                return err('File đang được nội dung hoặc đề thi sử dụng. Hãy gỡ tham chiếu trước khi xóa.', 409);
+            await ctx.env.MEDIA.delete(m.r2_key);
+            await ctx.env.DB.prepare(`DELETE FROM media WHERE id=?`).bind(parts[1]).run();
+            await audit(ctx.env, g.admin.id, 'media.delete', 'media', parts[1], { key: m.r2_key }, ctx.request);
+            return ok({ deleted: true });
+        }
+        // ADMIN USERS / ROLES / LOGS
+        if (path === '/admin/accounts' && method === 'GET') {
+            const g = await guard(ctx, 'users.manage');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT id,name,email,status,is_root,last_login_at,created_at FROM admins ORDER BY is_root DESC,created_at`).all();
+            return ok(rows.results || []);
+        }
+        if (path === '/admin/accounts' && method === 'POST') {
+            const g = await guard(ctx, 'users.manage');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request);
+            if (!b.name || !b.email || !b.password)
+                return err('Thiếu thông tin tài khoản.');
+            if (!validEmail(b.email))
+                return err('Email không hợp lệ.', 422);
+            if (String(b.password).length < 10)
+                return err('Mật khẩu phải có ít nhất 10 ký tự.', 422);
+            const hp = await hashPassword(b.password), id = crypto.randomUUID();
+            await ctx.env.DB.prepare(`INSERT INTO admins(id,name,email,password_hash,password_salt,status,is_root,created_by,created_at) VALUES(?,?,?,?,?,'active',0,?,datetime('now'))`).bind(id, b.name, String(b.email).toLowerCase(), hp.hash, hp.salt, g.admin.id).run();
+            if (Array.isArray(b.roles))
+                for (const r of b.roles)
+                    await ctx.env.DB.prepare(`INSERT OR IGNORE INTO admin_roles(admin_id,role_id) VALUES(?,?)`).bind(id, r).run();
+            await audit(ctx.env, g.admin.id, 'admin.create', 'admin', id, { email: b.email }, ctx.request);
+            return ok({ id });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'accounts' && parts[2] && method === 'PUT') {
+            const g = await guard(ctx, 'users.manage');
+            if (g.error)
+                return g.error;
+            const id = parts[2], b = await body(ctx.request), target = await ctx.env.DB.prepare(`SELECT * FROM admins WHERE id=?`).bind(id).first();
+            if (!target)
+                return err('Không tìm thấy tài khoản.', 404);
+            if (target.is_root && b.status === 'disabled')
+                return err('Không thể khóa tài khoản gốc.', 409);
+            if (!validEmail(b.email || target.email))
+                return err('Email không hợp lệ.', 422);
+            if (b.password && String(b.password).length < 10)
+                return err('Mật khẩu phải có ít nhất 10 ký tự.', 422);
+            await ctx.env.DB.prepare(`UPDATE admins SET name=?,email=?,status=?,updated_at=datetime('now') WHERE id=?`).bind(b.name || target.name, b.email || target.email, b.status || target.status, id).run();
+            if (b.password) {
+                const hp = await hashPassword(b.password);
+                await ctx.env.DB.prepare(`UPDATE admins SET password_hash=?,password_salt=? WHERE id=?`).bind(hp.hash, hp.salt, id).run();
+            }
+            if (Array.isArray(b.roles)) {
+                await ctx.env.DB.prepare(`DELETE FROM admin_roles WHERE admin_id=?`).bind(id).run();
+                for (const r of b.roles)
+                    await ctx.env.DB.prepare(`INSERT OR IGNORE INTO admin_roles(admin_id,role_id) VALUES(?,?)`).bind(id, r).run();
+            }
+            if (b.password || b.revoke_sessions)
+                await ctx.env.DB.prepare(`DELETE FROM admin_sessions WHERE admin_id=?`).bind(id).run();
+            await audit(ctx.env, g.admin.id, 'admin.update', 'admin', id, { status: b.status, roles: b.roles }, ctx.request);
+            return ok({ saved: true });
+        }
+        if (path === '/admin/roles' && method === 'GET') {
+            const g = await guard(ctx, 'roles.manage');
+            if (g.error)
+                return g.error;
+            const roles = await ctx.env.DB.prepare(`SELECT * FROM roles ORDER BY name`).all(), perms = await ctx.env.DB.prepare(`SELECT * FROM permissions ORDER BY code`).all();
+            for (const r of roles.results || []) {
+                const p = await ctx.env.DB.prepare(`SELECT p.code FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=? ORDER BY p.code`).bind(r.id).all();
+                r.permissions = (p.results || []).map((x) => x.code);
+            }
+            return ok({ roles: roles.results || [], permissions: perms.results || [] });
+        }
+        if (parts[0] === 'admin' && parts[1] === 'roles' && parts[2] && method === 'PUT') {
+            const g = await guard(ctx, 'roles.manage');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request), rid = parts[2];
+            await ctx.env.DB.prepare(`UPDATE roles SET name=?,description=? WHERE id=?`).bind(b.name, b.description || '', rid).run();
+            await ctx.env.DB.prepare(`DELETE FROM role_permissions WHERE role_id=?`).bind(rid).run();
+            for (const code of b.permissions || []) {
+                const p = await ctx.env.DB.prepare(`SELECT id FROM permissions WHERE code=?`).bind(code).first();
+                if (p)
+                    await ctx.env.DB.prepare(`INSERT OR IGNORE INTO role_permissions(role_id,permission_id) VALUES(?,?)`).bind(rid, p.id).run();
+            }
+            await audit(ctx.env, g.admin.id, 'role.update', 'role', rid, { permissions: b.permissions }, ctx.request);
+            return ok({ saved: true });
+        }
+        if (path === '/admin/revisions' && method === 'GET') {
+            const g = await guard(ctx, 'settings.manage');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT r.*,a.name changed_by_name FROM site_revisions r LEFT JOIN admins a ON a.id=r.changed_by ORDER BY r.created_at DESC LIMIT 300`).all();
+            return ok(rows.results || []);
+        }
+        if (parts[0] === 'admin' && parts[1] === 'revisions' && parts[2] && parts[3] === 'restore' && method === 'POST') {
+            const g = await guard(ctx, 'settings.manage');
+            if (g.error)
+                return g.error;
+            const r = await ctx.env.DB.prepare(`SELECT * FROM site_revisions WHERE id=?`).bind(parts[2]).first();
+            if (!r)
+                return err('Không tìm thấy phiên bản.', 404);
+            const cur = await ctx.env.DB.prepare(`SELECT value FROM site_settings WHERE key=?`).bind(r.key).first();
+            await ctx.env.DB.prepare(`INSERT INTO site_settings(key,value,updated_at) VALUES(?,?,datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=datetime('now')`).bind(r.key, r.old_value ?? '').run();
+            await ctx.env.DB.prepare(`INSERT INTO site_revisions(id,key,old_value,new_value,changed_by,created_at) VALUES(?,?,?,?,?,datetime('now'))`).bind(crypto.randomUUID(), r.key, cur?.value ?? null, r.old_value ?? '', g.admin.id).run();
+            await audit(ctx.env, g.admin.id, 'site.revision.restore', 'site', r.id, { key: r.key }, ctx.request);
+            return ok({ restored: true });
+        }
+        if (path === '/admin/logs' && method === 'GET') {
+            const g = await guard(ctx, 'logs.view');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT l.*,a.name admin_name,a.email admin_email FROM audit_logs l LEFT JOIN admins a ON a.id=l.admin_id ORDER BY l.created_at DESC LIMIT 500`).all();
+            return ok(rows.results || []);
+        }
+        // EXAMS ADMIN
+        if (path === '/exams' && method === 'GET') {
+            const g = await guard(ctx, 'exams.view');
+            if (g.error)
+                return g.error;
+            const rows = await ctx.env.DB.prepare(`SELECT e.*,(SELECT COUNT(*) FROM questions q WHERE q.exam_id=e.id) question_count FROM exams e ORDER BY updated_at DESC`).all();
+            return ok(rows.results || []);
+        }
+        if (path === '/exams' && method === 'POST') {
+            const g = await guard(ctx, 'exams.edit');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request), id = crypto.randomUUID();
+            await ctx.env.DB.prepare(`INSERT INTO exams(id,code,title,group_key,level,duration_minutes,status,require_explanation,description,instructions,total_points,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,'draft',?,?,?,?,?,?,datetime('now'),datetime('now'))`).bind(id, b.code || `NHN-${Date.now()}`, b.title || 'Đề mới', b.group_key || 'hsk', b.level || '', Number(b.duration_minutes || 60), b.require_explanation === false ? 0 : 1, b.description || '', b.instructions || '', Number(b.total_points || 50), g.admin.id, g.admin.id).run();
+            await audit(ctx.env, g.admin.id, 'exam.create', 'exam', id, b, ctx.request);
+            return ok({ id });
+        }
+        if (parts[0] === 'exams' && parts[1] && method === 'GET' && !['validate'].includes(parts[1])) {
+            const g = await guard(ctx, 'exams.view');
+            if (g.error)
+                return g.error;
+            const e = await ctx.env.DB.prepare(`SELECT * FROM exams WHERE id=?`).bind(parts[1]).first();
+            if (!e)
+                return err('Không tìm thấy đề.', 404);
+            const qs = await ctx.env.DB.prepare(`SELECT * FROM questions WHERE exam_id=? ORDER BY position`).bind(parts[1]).all();
+            for (const q of qs.results || []) {
+                const os = await ctx.env.DB.prepare(`SELECT * FROM question_options WHERE question_id=? ORDER BY position`).bind(q.id).all();
+                q.options = os.results || [];
+            }
+            return ok({ exam: e, questions: qs.results || [] });
+        }
+        if (parts[0] === 'exams' && parts[1] && method === 'PUT') {
+            const g = await guard(ctx, 'exams.edit');
+            if (g.error)
+                return g.error;
+            const id = parts[1], b = await body(ctx.request), e = await ctx.env.DB.prepare(`SELECT * FROM exams WHERE id=?`).bind(id).first();
+            if (!e)
+                return err('Không tìm thấy đề.', 404);
+            await ctx.env.DB.prepare(`UPDATE exams SET code=?,title=?,group_key=?,level=?,duration_minutes=?,require_explanation=?,description=?,instructions=?,total_points=?,updated_by=?,updated_at=datetime('now') WHERE id=?`).bind(b.code ?? e.code, b.title ?? e.title, b.group_key ?? e.group_key, b.level ?? e.level, Number(b.duration_minutes ?? e.duration_minutes), b.require_explanation === undefined ? e.require_explanation : (b.require_explanation ? 1 : 0), b.description ?? e.description, b.instructions ?? e.instructions, Number(b.total_points ?? e.total_points), g.admin.id, id).run();
+            await audit(ctx.env, g.admin.id, 'exam.update', 'exam', id, b, ctx.request);
+            return ok({ saved: true });
+        }
+        if (parts[0] === 'exams' && parts[1] && method === 'DELETE') {
+            const g = await guard(ctx, 'exams.delete');
+            if (g.error)
+                return g.error;
+            await ctx.env.DB.prepare(`DELETE FROM question_options WHERE question_id IN (SELECT id FROM questions WHERE exam_id=?)`).bind(parts[1]).run();
+            await ctx.env.DB.prepare(`DELETE FROM questions WHERE exam_id=?`).bind(parts[1]).run();
+            await ctx.env.DB.prepare(`DELETE FROM exams WHERE id=?`).bind(parts[1]).run();
+            await audit(ctx.env, g.admin.id, 'exam.delete', 'exam', parts[1], {}, ctx.request);
+            return ok({ deleted: true });
+        }
+        if (path === '/exams/import' && method === 'POST') {
+            const g = await guard(ctx, 'exams.edit');
+            if (g.error)
+                return g.error;
+            const b = await body(ctx.request);
+            if (!b.exam || !Array.isArray(b.questions))
+                return err('Payload import không hợp lệ.');
+            if (b.questions.length !== 50)
+                return err('Mỗi đề phải có đúng 50 câu.');
+            const examId = b.exam.id || crypto.randomUUID();
+            await ctx.env.DB.prepare(`INSERT INTO exams(id,code,title,group_key,level,duration_minutes,status,require_explanation,description,instructions,total_points,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,'draft',?,?,?,?,?,?,datetime('now'),datetime('now')) ON CONFLICT(id) DO UPDATE SET code=excluded.code,title=excluded.title,group_key=excluded.group_key,level=excluded.level,duration_minutes=excluded.duration_minutes,status='draft',require_explanation=excluded.require_explanation,description=excluded.description,instructions=excluded.instructions,total_points=excluded.total_points,updated_by=excluded.updated_by,updated_at=datetime('now')`).bind(examId, b.exam.code, b.exam.title, b.exam.group_key, b.exam.level || '', Number(b.exam.duration_minutes || 60), b.exam.require_explanation === false ? 0 : 1, b.exam.description || '', b.exam.instructions || '', Number(b.exam.total_points || 50), g.admin.id, g.admin.id).run();
+            await ctx.env.DB.prepare(`DELETE FROM question_options WHERE question_id IN (SELECT id FROM questions WHERE exam_id=?)`).bind(examId).run();
+            await ctx.env.DB.prepare(`DELETE FROM questions WHERE exam_id=?`).bind(examId).run();
+            for (let i = 0; i < 50; i++) {
+                const q = b.questions[i], qid = crypto.randomUUID(), pos = Number(q.position || i + 1);
+                await ctx.env.DB.prepare(`INSERT INTO questions(id,exam_id,position,type,content,explanation,audio_key,image_key,requires_audio,points,tts_text,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`).bind(qid, examId, pos, q.type || 'single_choice', q.content || '', q.explanation || '', q.audio_key || null, q.image_key || null, q.requires_audio ? 1 : 0, Number(q.points || 1), q.tts_text || null).run();
+                const opts = q.options || [];
+                for (let j = 0; j < opts.length; j++) {
+                    const o = opts[j];
+                    await ctx.env.DB.prepare(`INSERT INTO question_options(id,question_id,label,content,is_correct,position) VALUES(?,?,?,?,?,?)`).bind(crypto.randomUUID(), qid, o.label || String.fromCharCode(65 + j), o.content || '', o.is_correct ? 1 : 0, j + 1).run();
+                }
+            }
+            await audit(ctx.env, g.admin.id, 'exam.import', 'exam', examId, { questions: 50 }, ctx.request);
+            return ok({ id: examId });
+        }
+        if (path === '/exams/validate' && method === 'GET') {
+            const g = await guard(ctx, 'exams.publish');
+            if (g.error)
+                return g.error;
+            const id = new URL(ctx.request.url).searchParams.get('id') || '';
+            const r = await validateExam(ctx.env, id, true);
+            if (!r.exists)
+                return err('Không tìm thấy đề.', 404);
+            return ok(r);
+        }
+        if (parts[0] === 'exams' && parts[1] && parts[2] === 'publish' && method === 'POST') {
+            const g = await guard(ctx, 'exams.publish');
+            if (g.error)
+                return g.error;
+            const r = await validateExam(ctx.env, parts[1], true);
+            if (!r.valid)
+                return json({ ok: false, error: 'Đề chưa vượt qua Validate.', data: r }, 422);
+            await ctx.env.DB.prepare(`UPDATE exams SET status='published',validated_at=datetime('now'),published_at=COALESCE(published_at,datetime('now')),updated_at=datetime('now') WHERE id=?`).bind(parts[1]).run();
+            await audit(ctx.env, g.admin.id, 'exam.publish', 'exam', parts[1], {}, ctx.request);
+            return ok({ published: true });
+        }
+        return err('API endpoint không tồn tại.', 404);
+    }
+    catch (e) {
+        console.error(e);
+        return err(e?.message || 'Lỗi máy chủ.', 500);
+    }
+};
