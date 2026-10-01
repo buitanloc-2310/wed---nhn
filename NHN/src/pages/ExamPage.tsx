@@ -22,11 +22,13 @@ export function ExamPage(){
  const [deadline,setDeadline]=useState('');
  const [submitting,setSubmitting]=useState(false);
  const [loading,setLoading]=useState(false);
+ const [catalogError,setCatalogError]=useState('');
 
  const loadCatalog=()=>{
   const query=new URLSearchParams({group});
   if(group==='hsk'&&level)query.set('level',level);
-  api(`/public/exams?${query.toString()}`).then(r=>setCatalog(r.ok?r.data||[]:[])).catch(()=>setCatalog([]));
+  setCatalogError('');
+  api(`/public/exams?${query.toString()}`).then(r=>{if(r.ok){setCatalog(r.data||[]);setCatalogError('')}else{setCatalog([]);setCatalogError(r.error||'Không thể tải danh sách đề.')}}).catch(()=>{setCatalog([]);setCatalogError('Không thể kết nối API ngân hàng đề.')});
  };
  useEffect(loadCatalog,[group,level]);
  useEffect(()=>{if(mode!=='exam'||!deadline)return;const tick=()=>setSeconds(Math.max(0,Math.ceil((Date.parse(deadline)-Date.now())/1000)));tick();const t=setInterval(tick,1000);return()=>clearInterval(t)},[mode,deadline]);
@@ -78,7 +80,7 @@ export function ExamPage(){
    {group==='hsk'&&<div className="level-tabs">{Array.from({length:9},(_,i)=>`HSK ${i+1}`).map(x=><button key={x} className={level===x?'active':''} onClick={()=>setLevel(x)}>{x}</button>)}</div>}
    <div className="section-head" style={{marginTop:32}}><div><span className="kicker">ĐỀ LUYỆN</span><h2>{group==='hsk'?level:examGroups.find(x=>x.id===group)?.title}</h2><p>{catalog.length} đề hiện có trong nhóm này.</p></div></div>
    <div className="card-grid">{catalog.map(e=><article className="feature-card" key={e.id}><span className="han-chip">卷</span><h3>{e.title}</h3><p>{e.level||e.group_key} · {e.duration_minutes} phút · 50 câu</p><p>{e.description}</p><button className="btn btn-primary" disabled={loading} onClick={()=>start(e.id)}>Bắt đầu làm bài</button></article>)}</div>
-   {!catalog.length&&<div className="notice"><AlertTriangle/><div><b>Chưa tải được ngân hàng đề từ D1.</b><span>Hãy chạy toàn bộ D1 migrations 0001–0016. Sau khi migration hoàn tất, nhóm này sẽ có đủ đề được xuất bản sẵn.</span></div></div>}
+   {!catalog.length&&<div className="notice"><AlertTriangle/><div><b>{catalogError?'Không thể tải ngân hàng đề.':'Chưa có đề được xuất bản trong nhóm này.'}</b><span>{catalogError||'Vui lòng kiểm tra lại sau hoặc chọn nhóm đề khác.'}</span></div></div>}
   </div></section>
  </>;
 }
