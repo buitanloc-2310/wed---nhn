@@ -1,6 +1,6 @@
 export const siteMenu = [
   {label:'Trang chủ', path:'/'},
-  {label:'Về chúng tôi', path:'/ve-chung-toi', children:['Nhà Hán Ngữ là gì?','Câu chuyện hình thành','Vì sao NHN được xây dựng?','Sứ mệnh','Tầm nhìn','Giá trị cốt lõi','Định hướng phát triển','NHN hướng đến ai?','Vai trò trong hệ sinh thái Sky First','Cam kết với cộng đồng']},
+  {label:'Về chúng tôi', path:'/ve-chung-toi', children:['Nhà Hán Ngữ là gì?','Câu chuyện hình thành','Vì sao NHN được xây dựng?','Sứ mệnh','Tầm nhìn','Giá trị cốt lõi','Định hướng phát triển','NHN hướng đến ai?','Vai trò trong mạng lưới Sky First','Cam kết với cộng đồng']},
   {label:'Học Hán Ngữ', path:'/hoc-han-ngu', children:['HSK','HSKK','CSCA','Tiếng Trung giao tiếp','Từ vựng','Ngữ pháp','Phát âm','Chữ Hán']},
   {label:'Kho học liệu', path:'/kho-hoc-lieu', children:['Tài liệu HSK 1–6','Tài liệu HSKK','Tài liệu CSCA','Đề thi','Bài tập','Flashcard','Tài liệu tham khảo']},
   {label:'Làm bài tập', path:'/thi-thu', children:['Làm bài tập HSK','Làm bài tập HSKK','Nâng cao','Cao cấp','Tiếng Trung giao tiếp','Luyện nghe','Kết quả & đánh giá']},

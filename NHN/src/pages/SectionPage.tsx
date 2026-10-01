@@ -2,7 +2,7 @@ import React,{useEffect,useState} from 'react';
 import {api} from '../lib/api';
 import {builtinFor} from '../data/longContent';
 const fallback:Record<string,{title:string;intro:string;items:string[]}>= {
- '/ve-chung-toi':{title:'Về Nhà Hán Ngữ',intro:'Tìm hiểu định hướng, câu chuyện, sứ mệnh và cách Nhà Hán Ngữ xây dựng một cộng đồng học tập Hán ngữ cởi mở, thực tế và có giá trị lâu dài.',items:['Nhà Hán Ngữ là gì?','Câu chuyện hình thành','Vì sao NHN được xây dựng?','Sứ mệnh','Tầm nhìn','Giá trị cốt lõi','Định hướng phát triển','NHN hướng đến ai?','Vai trò trong hệ sinh thái Sky First','Cam kết với cộng đồng']},
+ '/ve-chung-toi':{title:'Về Nhà Hán Ngữ',intro:'Tìm hiểu định hướng, câu chuyện, sứ mệnh và cách Nhà Hán Ngữ xây dựng một cộng đồng học tập Hán ngữ cởi mở, thực tế và có giá trị lâu dài.',items:['Nhà Hán Ngữ là gì?','Câu chuyện hình thành','Vì sao NHN được xây dựng?','Sứ mệnh','Tầm nhìn','Giá trị cốt lõi','Định hướng phát triển','NHN hướng đến ai?','Vai trò trong mạng lưới Sky First','Cam kết với cộng đồng']},
  '/hoc-han-ngu':{title:'Học Hán Ngữ',intro:'Học theo cấp độ, kỹ năng và mục tiêu.',items:['HSK','HSKK','CSCA','Tiếng Trung giao tiếp','Từ vựng','Ngữ pháp','Phát âm','Chữ Hán']},
  '/kho-hoc-lieu':{title:'Kho học liệu',intro:'Tài liệu được sắp xếp theo cấp độ, chủ đề và mục đích sử dụng.',items:['Tài liệu HSK 1–6','Tài liệu HSKK','Tài liệu CSCA','Đề thi','Bài tập','Flashcard','Tài liệu tham khảo']},
  '/kien-thuc':{title:'Kiến thức',intro:'Khám phá chữ viết, thành ngữ, văn hóa, lịch sử và góc học tập.',items:['Hán ngữ','Chữ Hán','Văn hóa Trung Hoa','Lịch sử','Thành ngữ','Góc học tập']},
@@ -19,7 +19,7 @@ export function SectionPage({path}:{path:string}){
  useEffect(()=>{
    const local=builtinFor(module).map(x=>({id:`builtin-${x.slug}`,slug:x.slug,title:x.title,position:x.position,data:{excerpt:x.excerpt,body_html:x.body_html,word_count:x.word_count}}));
    setItems(local);
-   api(`/public/cms/${module}`).then(r=>{if(r.ok&&Array.isArray(r.data)&&r.data.length)setItems(r.data)}).catch(()=>{});
+   api(`/public/cms/${module}`).then(r=>{if(r.ok&&Array.isArray(r.data)&&r.data.length){const bySlug=new Map(local.map((x:any)=>[x.slug,x]));setItems(r.data.map((x:any)=>{const wc=Number(x.data?.word_count||0);return (wc>=300&&wc<=400)?x:(bySlug.get(x.slug)||x)}))}}).catch(()=>{});
  },[path,module]);
  return <>
   <section className="page-hero"><div className="container"><span className="kicker">NHÀ HÁN NGỮ</span><h1>{d.title}</h1><p>{d.intro}</p></div></section>
